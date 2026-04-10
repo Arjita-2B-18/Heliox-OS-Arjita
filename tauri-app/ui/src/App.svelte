@@ -19,7 +19,9 @@
 
   let activeTab: "chat" | "log" | "settings" = $state("chat");
   let isDragging = $state(false);
-  let showWizard = $derived(!$settings.first_run_complete);
+  let showWizard = $derived(
+    !$settings.first_run_complete && localStorage.getItem("heliox_first_run_complete") !== "true"
+  );
   let resultsEl: HTMLDivElement | undefined = $state();
   let particleBurst: ParticleBurst | undefined = $state();
 

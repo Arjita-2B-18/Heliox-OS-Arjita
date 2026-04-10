@@ -57,28 +57,55 @@ function createSettings() {
   const { subscribe, set, update } = writable<PilotSettings>(defaultSettings);
 
   async function load() {
+    // Load from localStorage first (instant, always available)
     try {
-      const config = (await call("get_config")) as PilotSettings;
-      set(config);
-    } catch {
-      // use defaults
-    }
+      const stored = localStorage.getItem("heliox_settings");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        update((s) => ({ ...s, ...parsed }));
+      }
+    } catch { /* ignore */ }
+
+    // Then try to sync from daemon in background (non-blocking)
+    call("get_config")
+      .then((config) => {
+        set(config as PilotSettings);
+        // Update localStorage with daemon's authoritative copy
+        try {
+          localStorage.setItem("heliox_settings", JSON.stringify(config));
+        } catch { /* ignore */ }
+      })
+      .catch(() => {
+        // daemon not available, localStorage values are fine
+      });
   }
 
   async function updateSection(section: string, values: Record<string, unknown>) {
-    try {
-      await call("update_config", { section, values });
-      if (section === "") {
-        update((s) => ({ ...s, ...values }));
-      } else {
-        update((s) => ({
-          ...s,
-          [section]: { ...(s as any)[section], ...values },
-        }));
-      }
-    } catch (err) {
-      console.error("Failed to update config:", err);
+    // Always update the local store immediately so the UI never hangs
+    if (section === "") {
+      update((s) => ({ ...s, ...values }));
+    } else {
+      update((s) => ({
+        ...s,
+        [section]: { ...(s as any)[section], ...values },
+      }));
     }
+
+    // Persist to localStorage as a reliable fallback
+    try {
+      const stored = JSON.parse(localStorage.getItem("heliox_settings") || "{}");
+      if (section === "") {
+        Object.assign(stored, values);
+      } else {
+        stored[section] = { ...(stored[section] || {}), ...values };
+      }
+      localStorage.setItem("heliox_settings", JSON.stringify(stored));
+    } catch { /* ignore */ }
+
+    // Try to sync to daemon in background (non-blocking)
+    call("update_config", { section, values }).catch((err) => {
+      console.warn("Daemon unreachable, settings saved locally:", err);
+    });
   }
 
   load();

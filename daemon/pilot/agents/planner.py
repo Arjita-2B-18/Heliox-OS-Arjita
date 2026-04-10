@@ -295,9 +295,103 @@ class Planner:
             home=str(__import__("pathlib").Path.home()),
         )
 
+    # ------------------------------------------------------------------
+    # Fast-path: instant local matching for simple commands (no LLM call)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _try_fast_path(user_input: str) -> ActionPlan | None:
+        """Match simple commands locally and return an instant ActionPlan.
+
+        Returns None if the command is too complex for fast-path.
+        """
+        import re
+
+        text = user_input.strip().lower()
+
+        # --- "open <url>" ---
+        url_match = re.match(
+            r"^(?:open|go to|navigate to|visit|launch|browse)\s+(https?://\S+|[\w.-]+\.\w{2,}(?:/\S*)?)$",
+            text,
+        )
+        if url_match:
+            url = url_match.group(1)
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            return ActionPlan(
+                actions=[
+                    Action(
+                        action_type=ActionType.OPEN_URL,
+                        target=url,
+                        parameters=OpenUrlParams(url=url),
+                    )
+                ],
+                explanation=f"Open {url} in the default web browser",
+                raw_input=user_input,
+            )
+
+        # --- "take a screenshot" / "screenshot" ---
+        if re.match(r"^(?:take\s+(?:a\s+)?)?screenshot$", text):
+            return ActionPlan(
+                actions=[
+                    Action(
+                        action_type=ActionType.SCREENSHOT,
+                        target="screen",
+                        parameters=ScreenshotParams(),
+                    )
+                ],
+                explanation="Take a screenshot of the current screen",
+                raw_input=user_input,
+            )
+
+        # --- "show system info" / "system information" ---
+        if re.match(r"^(?:show\s+)?system\s+(?:info|information)$", text):
+            return ActionPlan(
+                actions=[
+                    Action(
+                        action_type=ActionType.SYSTEM_INFO,
+                        target="system",
+                        parameters=SystemInfoParams(),
+                    )
+                ],
+                explanation="Display current system information",
+                raw_input=user_input,
+            )
+
+        # --- "open <app>" (known apps) ---
+        app_match = re.match(
+            r"^(?:open|launch|start|run)\s+([\w\s]+)$", text
+        )
+        if app_match:
+            app_name = app_match.group(1).strip()
+            # Only fast-path for clearly an app name (not a complex sentence)
+            if len(app_name.split()) <= 3 and not any(
+                kw in app_name for kw in ("and", "then", "after", "with", "from", "the file")
+            ):
+                return ActionPlan(
+                    actions=[
+                        Action(
+                            action_type=ActionType.OPEN_APPLICATION,
+                            target=app_name,
+                            parameters=OpenApplicationParams(name=app_name),
+                        )
+                    ],
+                    explanation=f"Launch {app_name}",
+                    raw_input=user_input,
+                )
+
+        return None  # Not a simple command — use LLM
+
     async def plan(self, user_input: str, error_context: str = "") -> ActionPlan:
         """Generate an action plan from a natural language request."""
         try:
+            # Fast-path: skip LLM for simple, pattern-matchable commands
+            if not error_context:
+                fast = self._try_fast_path(user_input)
+                if fast is not None:
+                    logger.info("Fast-path matched: %s", user_input[:80])
+                    return fast
+
             context = await self._memory.get_context(user_input)
 
             if error_context:

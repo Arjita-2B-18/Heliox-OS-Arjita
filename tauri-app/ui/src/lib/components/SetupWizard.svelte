@@ -43,6 +43,7 @@
     finishing = true;
 
     try {
+      // These now save to localStorage instantly (non-blocking daemon sync)
       await settings.updateSection("model", {
         provider: modelProvider,
         ollama_model: ollamaModel,
@@ -63,14 +64,13 @@
         protected_packages: packages,
       });
 
+      // Store API key in background (don't block wizard)
       if (cloudApiKey && cloudProvider) {
-        try {
-          const { call } = await import("../api/daemon");
-          await call("store_api_key", { provider: cloudProvider, key: cloudApiKey });
-        } catch {
-          // vault might not be set up yet
-        }
+        call("store_api_key", { provider: cloudProvider, key: cloudApiKey }).catch(() => {});
       }
+
+      // Mark first run complete in localStorage
+      localStorage.setItem("heliox_first_run_complete", "true");
 
       await oncomplete();
     } finally {
