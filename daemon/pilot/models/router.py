@@ -50,10 +50,10 @@ class ModelRouter:
             try:
                 return await self._cloud.generate(prompt, system=system, json_mode=json_mode, temperature=temperature)
             except Exception as e:
-                logger.warning("Cloud API failed (%s), falling back to Ollama", e)
-                # Fall through to Ollama
+                logger.error("Cloud API failed: %s", e)
+                raise RuntimeError(f"Cloud API Failed: {e}")
 
-        if provider in ("ollama", "local") or provider == "cloud":
+        if provider in ("ollama", "local"):
             if await self._ollama.is_available():
                 model = await self._resolve_ollama_model()
                 return await self._ollama.generate(

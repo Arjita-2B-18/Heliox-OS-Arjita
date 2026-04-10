@@ -344,6 +344,20 @@ class Planner:
                 raw_input=user_input,
             )
 
+        # --- "take a screenshot and describe it" ---
+        if re.match(r"^(?:take\s+(?:a\s+)?)?screenshot\s+and\s+describe\s+it$", text):
+            return ActionPlan(
+                actions=[
+                    Action(
+                        action_type=ActionType.SCREEN_ANALYZE,
+                        target="screen",
+                        parameters=ScreenshotParams(),
+                    )
+                ],
+                explanation="Take a screenshot and use vision analysis to describe it",
+                raw_input=user_input,
+            )
+
         # --- "show system info" / "system information" ---
         if re.match(r"^(?:show\s+)?system\s+(?:info|information)$", text):
             return ActionPlan(

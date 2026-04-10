@@ -338,7 +338,6 @@ async def _ocr_tesseract_cli(img_bytes: bytes, language: str) -> str:
 
 async def _ocr_easyocr(img_bytes: bytes, language: str) -> str:
     from io import BytesIO
-    import sys
 
     try:
         import easyocr
@@ -526,8 +525,8 @@ async def screen_element_map(
     img_bytes = await _capture_screenshot_bytes(region)
 
     try:
-        from io import BytesIO
         import sys
+        from io import BytesIO
 
         try:
             import easyocr
