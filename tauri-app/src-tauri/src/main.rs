@@ -31,63 +31,9 @@ fn get_venv_python() -> std::path::PathBuf {
     }
 }
 
-fn spawn_daemon() -> Option<Child> {
-    let data_dir = get_app_data_dir();
-    if !data_dir.exists() {
-        let _ = std::fs::create_dir_all(&data_dir);
-    }
-    
-    let python_exe = get_venv_python();
-    
-    // First-run setup: if the virtualenv python doesn't exist, build it
-    if !python_exe.exists() {
-        println!("[Heliox OS] First run detected. Creating Python virtual environment...");
-        let venv_dir = data_dir.join("env");
-        
-        // 1. Create VirtualEnv
-        let mut venv_cmd = Command::new("python");
-        #[cfg(not(target_os = "windows"))]
-        let mut venv_cmd = Command::new("python3");
-        
-        // Suppress window popup on windows for the setup script
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            venv_cmd.creation_flags(0x08000000);
-        }
-
-        let status = venv_cmd.args(["-m", "venv", venv_dir.to_str().unwrap()]).status();
-        if status.is_err() || !status.unwrap().success() {
-            eprintln!("[Heliox OS] Error: Failed to create virtual environment. Is Python installed?");
-            return None;
-        }
-
-        // 2. Install pilot-daemon
-        println!("[Heliox OS] Installing AI backend into virtual environment...");
-        let mut pip_exe = venv_dir.join("bin").join("pip");
-        #[cfg(target_os = "windows")]
-        { pip_exe = venv_dir.join("Scripts").join("pip.exe"); }
-
-        let mut pip_cmd = Command::new(&pip_exe);
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            pip_cmd.creation_flags(0x08000000);
-        }
-        
-        let install_status = pip_cmd
-            .args(["install", "pilot-daemon"])
-            .status();
-
-        if install_status.is_err() || !install_status.unwrap().success() {
-            eprintln!("[Heliox OS] Error: Failed to install pilot-daemon.");
-            return None;
-        }
-        println!("[Heliox OS] First run setup complete.");
-    }
-    
-    // 3. Boot the daemon using the isolated virtual environment safely
-    let mut cmd = Command::new(&python_exe);
+/// Try to launch the daemon using a specific python path.
+fn try_spawn_with(python: &std::path::Path) -> Option<Child> {
+    let mut cmd = Command::new(python);
     cmd.args(["-m", "pilot.server"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -99,15 +45,102 @@ fn spawn_daemon() -> Option<Child> {
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    let child = cmd.spawn().ok();
+    cmd.spawn().ok()
+}
 
-    if child.is_some() {
-        println!("[Heliox OS] AI daemon spawned successfully from virtualenv");
-    } else {
-        eprintln!("[Heliox OS] Warning: Could not spawn Python daemon.");
+/// Run the first-time venv + pip install in a background thread (non-blocking).
+fn setup_venv_in_background() {
+    std::thread::spawn(|| {
+        let data_dir = get_app_data_dir();
+        let _ = std::fs::create_dir_all(&data_dir);
+        let venv_dir = data_dir.join("env");
+
+        println!("[Heliox OS] First run detected — setting up virtual environment in background...");
+
+        // 1. Create venv
+        #[cfg(target_os = "windows")]
+        let sys_python = "python";
+        #[cfg(not(target_os = "windows"))]
+        let sys_python = "python3";
+
+        let mut venv_cmd = Command::new(sys_python);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            venv_cmd.creation_flags(0x08000000);
+        }
+
+        let ok = venv_cmd
+            .args(["-m", "venv", venv_dir.to_str().unwrap()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !ok {
+            eprintln!("[Heliox OS] Background setup: failed to create venv. Is Python installed?");
+            return;
+        }
+
+        // 2. pip install pilot-daemon
+        #[cfg(target_os = "windows")]
+        let pip_exe = venv_dir.join("Scripts").join("pip.exe");
+        #[cfg(not(target_os = "windows"))]
+        let pip_exe = venv_dir.join("bin").join("pip");
+
+        let mut pip_cmd = Command::new(&pip_exe);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            pip_cmd.creation_flags(0x08000000);
+        }
+
+        let ok = pip_cmd
+            .args(["install", "pilot-daemon"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if ok {
+            println!("[Heliox OS] Background setup complete — restart the app to activate AI backend.");
+        } else {
+            eprintln!("[Heliox OS] Background setup: pip install failed.");
+        }
+    });
+}
+
+fn spawn_daemon() -> Option<Child> {
+    let data_dir = get_app_data_dir();
+    let _ = std::fs::create_dir_all(&data_dir);
+
+    // === Strategy 1: Try the isolated venv python (production installs) ===
+    let venv_python = get_venv_python();
+    if venv_python.exists() {
+        if let Some(child) = try_spawn_with(&venv_python) {
+            println!("[Heliox OS] AI daemon spawned from venv");
+            return Some(child);
+        }
     }
 
-    child
+    // === Strategy 2: Try system python directly (local dev with `pip install -e daemon/`) ===
+    #[cfg(target_os = "windows")]
+    let sys_python = std::path::PathBuf::from("python");
+    #[cfg(not(target_os = "windows"))]
+    let sys_python = std::path::PathBuf::from("python3");
+
+    if let Some(child) = try_spawn_with(&sys_python) {
+        println!("[Heliox OS] AI daemon spawned from system Python");
+        return Some(child);
+    }
+
+    // === Strategy 3: Nothing worked — kick off background setup, don't block UI ===
+    if !venv_python.exists() {
+        println!("[Heliox OS] No daemon found. Starting background installation...");
+        setup_venv_in_background();
+    } else {
+        eprintln!("[Heliox OS] Warning: venv exists but daemon failed to start.");
+    }
+
+    None
 }
 
 fn main() {
