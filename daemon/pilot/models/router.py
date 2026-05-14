@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from pilot.config import DATA_DIR
+from pilot.models.cache import LLMCache
 from pilot.models.cloud import CloudClient
 from pilot.models.ollama import OllamaClient
 from pilot.models.rate_limiter import TokenBucketRateLimiter
@@ -32,11 +34,16 @@ class ModelRouter:
         self._cloud: CloudClient | None = None
         self._llamacpp: object | None = None
         self._resolved_ollama_model: str | None = None
+        self._cache = LLMCache(DATA_DIR / "llm_cache.db")
 
         if config.model.cloud_provider:
             self._cloud = CloudClient(config, vault)
 
         self._rate_limiter = TokenBucketRateLimiter(config.model)
+
+    async def initialize(self) -> None:
+        """Initialize the cache. Must be called before using generate()."""
+        await self._cache.initialize()
 
     async def generate(
         self,
@@ -51,60 +58,108 @@ class ModelRouter:
 
         If stream_callback is provided, tokens will be streamed via the callback
         instead of waiting for the full response.
-        """
-        await self._rate_limiter.acquire()
-        provider = self._config.model.provider
 
-        streaming = stream_callback is not None
+        Flow:
+        1. Determine model and provider
+        2. Check cache for exact match (skip cache if streaming)
+        3. On cache miss, acquire rate limit token
+        4. Call backend (cloud or local)
+        5. Store successful response in cache (skip if streaming)
+        """
+        provider = self._config.model.provider
+        model: str | None = None
+        response: str | None = None
+
+        # Skip cache when streaming - can't cache partial tokens
+        if not stream_callback:
+            # Try cloud backend first if configured
+            if provider == "cloud" and self._cloud:
+                model = self._config.model.cloud_model or "unknown"
+                response = await self._cache.get(prompt, model, provider, temperature, json_mode, system)
+                if response is not None:
+                    return response
+
+            # Try ollama or local backend
+            if provider in ("ollama", "local"):
+                if await self._ollama.is_available():
+                    model = await self._resolve_ollama_model()
+                    response = await self._cache.get(prompt, model, provider, temperature, json_mode, system)
+                    if response is not None:
+                        return response
+
+                if self._try_llamacpp():
+                    model = "llamacpp"
+                    response = await self._cache.get(prompt, model, provider, temperature, json_mode, system)
+                    if response is not None:
+                        return response
+
+            # Fallback: try ollama if not already tried
+            if provider != "ollama" and await self._ollama.is_available():
+                model = await self._resolve_ollama_model()
+                response = await self._cache.get(prompt, model, "ollama", temperature, json_mode, system)
+                if response is not None:
+                    return response
+
+            # Final fallback: cloud API
+            if self._cloud and provider not in ("ollama", "local"):
+                model = self._config.model.cloud_model or "unknown"
+                response = await self._cache.get(prompt, model, "cloud", temperature, json_mode, system)
+                if response is not None:
+                    return response
+
+        # Now do the actual generation with rate limiting
+        await self._rate_limiter.acquire()
 
         if provider == "cloud" and self._cloud:
             try:
-                return await self._cloud.generate(
-                    prompt,
-                    system=system,
-                    json_mode=json_mode,
-                    temperature=temperature,
-                    stream_callback=stream_callback,
+                response = await self._cloud.generate(
+                    prompt, system=system, json_mode=json_mode, temperature=temperature, stream_callback=stream_callback
                 )
+                if not stream_callback and model:
+                    await self._cache.set(prompt, model, provider, temperature, json_mode, response, system)
+                return response
             except Exception as e:
                 logger.error("Cloud API failed: %s", e)
                 raise RuntimeError(f"Cloud API Failed: {e}")
 
+        # Try ollama or local backend
         if provider in ("ollama", "local"):
             if await self._ollama.is_available():
                 model = await self._resolve_ollama_model()
-                return await self._ollama.generate(
-                    model,
-                    prompt,
-                    system=system,
-                    json_mode=json_mode,
-                    temperature=temperature,
-                    stream_callback=stream_callback,
+                response = await self._ollama.generate(
+                    model, prompt, system=system, json_mode=json_mode, temperature=temperature, stream_callback=stream_callback
                 )
+                if not stream_callback and model:
+                    await self._cache.set(prompt, model, provider, temperature, json_mode, response, system)
+                return response
 
             if self._try_llamacpp():
-                return await self._llamacpp_generate(prompt, system=system, temperature=temperature)
+                model = "llamacpp"
+                response = await self._llamacpp_generate(prompt, system=system, temperature=temperature)
+                if not stream_callback and model:
+                    await self._cache.set(prompt, model, provider, temperature, json_mode, response, system)
+                return response
 
-        if await self._ollama.is_available():
+        # Fallback: try ollama if not already tried
+        if provider != "ollama" and await self._ollama.is_available():
             model = await self._resolve_ollama_model()
-            return await self._ollama.generate(
-                model,
-                prompt,
-                system=system,
-                json_mode=json_mode,
-                temperature=temperature,
-                stream_callback=stream_callback,
+            response = await self._ollama.generate(
+                model, prompt, system=system, json_mode=json_mode, temperature=temperature, stream_callback=stream_callback
             )
+            if not stream_callback and model:
+                await self._cache.set(prompt, model, "ollama", temperature, json_mode, response, system)
+            return response
 
+        # Final fallback: cloud API
         if self._cloud:
+            model = self._config.model.cloud_model or "unknown"
             logger.warning("Falling back to cloud API — Ollama unavailable")
-            return await self._cloud.generate(
-                prompt,
-                system=system,
-                json_mode=json_mode,
-                temperature=temperature,
-                stream_callback=stream_callback,
+            response = await self._cloud.generate(
+                prompt, system=system, json_mode=json_mode, temperature=temperature, stream_callback=stream_callback
             )
+            if not stream_callback and model:
+                await self._cache.set(prompt, model, "cloud", temperature, json_mode, response, system)
+            return response
 
         raise RuntimeError("No model backend available. Start Ollama or configure a cloud API key.")
 
@@ -154,7 +209,7 @@ class ModelRouter:
         client: LlamaCppClient = self._llamacpp  # type: ignore[assignment]
         return await client.generate(prompt, system=system, temperature=temperature)
 
-    def rate_limit_stats(self) -> dict:
+    def rate_limit_stats(self) -> dict[str, Any]:
         """Return current rate limiter state and lifetime counters."""
         return self._rate_limiter.get_stats()
 
@@ -165,3 +220,23 @@ class ModelRouter:
         status["llamacpp"] = self._try_llamacpp()
         status["cloud"] = self._cloud is not None
         return status
+
+    async def cache_stats(self) -> dict[str, int]:
+        """Get cache statistics."""
+        return await self._cache.stats()
+
+    async def cache_clear(self, provider: str | None = None, model: str | None = None) -> int:
+        """Clear cache entries.
+
+        Args:
+            provider: If specified, only clear entries for this provider.
+            model: If specified, only clear entries for this model.
+
+        Returns:
+            Number of entries deleted.
+        """
+        return await self._cache.clear(provider, model)
+
+    async def close(self) -> None:
+        """Close the cache connection."""
+        await self._cache.close()
