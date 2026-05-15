@@ -114,9 +114,7 @@ class PilotConfig:
                 _validate_config_types(raw)
                 config = _merge_config(config, raw)
             except Exception as e:
-                logger.error(
-                    f"Failed to load config.toml: {e}. Falling back to safe defaults."
-                )
+                logger.error(f"Failed to load config.toml: {e}. Falling back to safe defaults.")
 
         if RESTRICTIONS_FILE.exists():
             raw = tomllib.loads(RESTRICTIONS_FILE.read_text(encoding="utf-8"))
@@ -194,10 +192,7 @@ def _validate_config_types(raw: dict) -> None:
             for actual_key, actual_value in raw[section].items():
                 # Catch invalid keys
                 if actual_key not in expected_keys:
-                    error_msg = (
-                        f"Invalid config key found: '{section}.{actual_key}'. "
-                        "Please check for typos."
-                    )
+                    error_msg = f"Invalid config key found: '{section}.{actual_key}'. Please check for typos."
                     logger.error(error_msg)
                     raise ValueError(error_msg)
 

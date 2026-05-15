@@ -41,9 +41,7 @@ async def speak(
             if cog_load > 0.6:
                 reduction = int((cog_load - 0.5) * 80)
                 rate = max(100, rate - reduction)
-                logger.info(
-                    f"Modulating voice rate to {rate} due to cognitive load {cog_load:.2f}"
-                )
+                logger.info(f"Modulating voice rate to {rate} due to cognitive load {cog_load:.2f}")
     except Exception as e:
         logger.debug(f"Failed to modulate TTS rate by cognitive load: {e}")
 
@@ -278,9 +276,7 @@ async def _record_audio(duration: int) -> str:
 
         return output_path
 
-    raise RuntimeError(
-        "Install sounddevice for audio recording: pip install sounddevice"
-    )
+    raise RuntimeError("Install sounddevice for audio recording: pip install sounddevice")
 
 
 async def _transcribe_whisper(
@@ -379,10 +375,7 @@ class ContinuousVoiceListener:
             self.wake_words,
         )
 
-        return (
-            f"Voice listener started. "
-            f"Say '{self.wake_words[0]}' to activate."
-        )
+        return f"Voice listener started. Say '{self.wake_words[0]}' to activate."
 
     async def stop(self) -> str:
         self._running = False
@@ -452,23 +445,14 @@ class ContinuousVoiceListener:
                         except Exception:
                             pass
 
-                    command_text = await self._record_and_transcribe(
-                        duration=8
-                    )
+                    command_text = await self._record_and_transcribe(duration=8)
 
-                    if (
-                        not command_text
-                        or command_text.strip() == "No speech detected"
-                    ):
+                    if not command_text or command_text.strip() == "No speech detected":
                         if self._on_status:
                             try:
                                 await self._on_status(
                                     "timeout",
-                                    {
-                                        "message": (
-                                            "Didn't catch that."
-                                        )
-                                    },
+                                    {"message": ("Didn't catch that.")},
                                 )
                             except Exception:
                                 pass
