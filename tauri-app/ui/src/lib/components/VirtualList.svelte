@@ -50,7 +50,7 @@
   let visStart = $state(0);
 
   /** Index of the last rendered item (inclusive). */
-  let visEnd = $state(Math.min(overscan * 2, 0));
+  let visEnd = $state(-1);
 
   /** The scrollable container element. */
   let scrollerEl: HTMLDivElement | undefined = $state();
@@ -63,27 +63,38 @@
 
   // ── Derived geometry ───────────────────────────────────────────────────────
 
+  /** Pre-calculated cumulative heights for O(1) lookups. */
+  let cumulativeHeights = $derived.by(() => {
+    let sum = 0;
+    return heights.map(h => {
+      sum += h;
+      return sum;
+    });
+  });
+
   /** Total virtual height of all items (px). */
   let totalHeight = $derived(
-    heights.reduce((sum, h) => sum + h, 0)
+    cumulativeHeights.length > 0 ? cumulativeHeights[cumulativeHeights.length - 1] : 0
   );
 
   /** Pixels of invisible content above the rendered window. */
   let paddingTop = $derived(
-    heights.slice(0, visStart).reduce((sum, h) => sum + h, 0)
+    visStart > 0 && cumulativeHeights.length > 0 ? cumulativeHeights[visStart - 1] : 0
   );
 
   /** Pixels of invisible content below the rendered window. */
   let paddingBottom = $derived(
-    heights.slice(visEnd + 1).reduce((sum, h) => sum + h, 0)
+    visEnd >= 0 && visEnd < cumulativeHeights.length - 1
+      ? totalHeight - cumulativeHeights[visEnd]
+      : 0
   );
 
   /** Slice of items currently in the DOM. */
   let visibleItems = $derived(
-    items.slice(visStart, visEnd + 1).map((value, i) => ({
+    visEnd >= visStart ? items.slice(visStart, visEnd + 1).map((value, i) => ({
       value,
       index: visStart + i,
-    }))
+    })) : []
   );
 
   // ── Height initialisation ──────────────────────────────────────────────────
@@ -143,27 +154,23 @@
     let foundStart = false;
 
     for (let i = 0; i < heights.length; i++) {
-      const bottom = cumulative + heights[i];
+      const bottom = cumulativeHeights[i];
 
       if (!foundStart && bottom > scrollTop) {
         newStart = Math.max(0, i - overscan);
         foundStart = true;
       }
 
-      if (foundStart && cumulative > scrollTop + clientH) {
+      if (foundStart && bottom > scrollTop + clientH) {
         newEnd = Math.min(heights.length - 1, i + overscan);
         break;
       }
-
-      cumulative = bottom;
     }
 
     // Guard: if list is shorter than viewport just render everything
     if (!foundStart) {
       newStart = 0;
       newEnd = heights.length - 1;
-    } else {
-      newEnd = Math.min(heights.length - 1, newEnd + overscan);
     }
 
     visStart = newStart;
@@ -277,5 +284,6 @@
 
   .vl-row {
     flex-shrink: 0;
+    margin-bottom: 8px;
   }
 </style>
