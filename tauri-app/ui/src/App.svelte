@@ -12,6 +12,7 @@
   import ParticleBurst from "./lib/components/ParticleBurst.svelte";
   import ExecutionGraph from "./lib/components/ExecutionGraph.svelte";
   import ReActPipeline from "./lib/components/ReActPipeline.svelte";
+  import VirtualList from "./lib/components/VirtualList.svelte";
   import PluginsTab from "./lib/components/PluginsTab.svelte";
   import { session } from "./lib/stores/session";
   import type { Message } from "./lib/stores/session";
@@ -25,7 +26,7 @@
   let showWizard = $derived(
     !$settings.first_run_complete && localStorage.getItem("heliox_first_run_complete") !== "true"
   );
-  let resultsEl: HTMLDivElement | undefined = $state();
+  let virtualListEl: VirtualList<Message> | undefined = $state();
   let particleBurst: ParticleBurst | undefined = $state();
 
   async function onSetupComplete() {
@@ -59,9 +60,7 @@
   }
 
   function scrollToBottom() {
-    tick().then(() => {
-      if (resultsEl) resultsEl.scrollTop = resultsEl.scrollHeight;
-    });
+    tick().then(() => virtualListEl?.scrollToBottom());
   }
 
   $effect(() => {
@@ -206,7 +205,7 @@
           />
         {/if}
 
-        <div class="results" bind:this={resultsEl}>
+        <div class="results">
           {#if $session.messages.length === 0 && !$session.loading}
             <div class="empty-state">
               <div class="empty-logo">C</div>
@@ -219,9 +218,11 @@
               </div>
             </div>
           {:else}
-            {#each $session.messages as msg (msg.timestamp)}
-              {@render messageBlock(msg)}
-            {/each}
+            <VirtualList bind:this={virtualListEl} items={$session.messages}>
+              {#snippet item(msg)}
+                {@render messageBlock(msg)}
+              {/snippet}
+            </VirtualList>
 
             {#if $session.loading}
               <ExecutionGraph />
@@ -513,11 +514,9 @@
 
   .results {
     flex: 1;
-    overflow-y: auto;
-    padding: 12px 16px;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 8px;
   }
 
   /* Empty state */
