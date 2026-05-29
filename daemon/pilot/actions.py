@@ -1,15 +1,15 @@
 """Pydantic models for structured action plans.
 
 Every LLM output is parsed into these models. The Executor only accepts
-validated Action objects — there is no path from raw LLM text to system calls.
+validated Action objects ΓÇö there is no path from raw LLM text to system calls.
 """
 
 from __future__ import annotations
 
 from enum import Enum, StrEnum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ActionType(StrEnum):
@@ -21,7 +21,9 @@ class ActionType(StrEnum):
     FILE_COPY = "file_copy"
     FILE_LIST = "file_list"
     FILE_SEARCH = "file_search"
+    DIRECTORY_SUMMARY = "directory_summary"
     FILE_PERMISSIONS = "file_permissions"
+    GIT_RESOLVE = "git_resolve"
 
     # -- Package management --
     PACKAGE_INSTALL = "package_install"
@@ -47,6 +49,7 @@ class ActionType(StrEnum):
     # -- Shell / command execution --
     SHELL_COMMAND = "shell_command"
     SHELL_SCRIPT = "shell_script"  # Run a multi-line script
+    PTY_EXEC = "pty_exec"  # Run command in a persistent PTY shell session
 
     # -- Open URL / Application / Notify (original) --
     OPEN_URL = "open_url"
@@ -125,6 +128,9 @@ class ActionType(StrEnum):
     REGISTRY_READ = "registry_read"
     REGISTRY_WRITE = "registry_write"
 
+    # -- Forensics & Log Analysis --
+    LOG_ANALYZE = "log_analyze"
+
     # ============================================================
     # TIER 1: GAME CHANGERS
     # ============================================================
@@ -202,6 +208,31 @@ class ActionType(StrEnum):
     API_SLACK = "api_slack"
     API_DISCORD = "api_discord"
     API_SCRAPE = "api_scrape"
+    # -- Workspace semantic search (RAG) --
+    WORKSPACE_INDEX = "workspace_index"
+    WORKSPACE_SEARCH = "workspace_search"
+
+    # -- Email (IMAP/SMTP) --
+    EMAIL_FETCH = "email_fetch"
+    EMAIL_SUMMARIZE = "email_summarize"
+    EMAIL_REPLY = "email_reply"
+
+    # -- Calendar reconciliation --
+    CALENDAR_FETCH = "calendar_fetch"
+    CALENDAR_RECONCILE = "calendar_reconcile"
+
+    # -- Remote execution (SSH) --
+    SSH_COMMAND = "ssh_command"
+    SSH_SCRIPT = "ssh_script"
+
+    # -- VLM zero-shot element detection --
+    SCREEN_DETECT_ELEMENTS = "screen_detect_elements"
+
+    # -- WebAssembly Plugin execution --
+    WASM_CALL = "wasm_call"
+
+    # -- Third-party skills (dynamic ``pilot/skills`` loader) --
+    SKILL_RUN = "skill_run"
 
 
 class PermissionTier(int, Enum):
@@ -216,6 +247,7 @@ READ_ONLY_ACTIONS = {
     ActionType.FILE_READ,
     ActionType.FILE_LIST,
     ActionType.FILE_SEARCH,
+    ActionType.DIRECTORY_SUMMARY,
     ActionType.PACKAGE_SEARCH,
     ActionType.SERVICE_STATUS,
     ActionType.GNOME_SETTING_READ,
@@ -243,12 +275,14 @@ READ_ONLY_ACTIONS = {
     ActionType.USER_INFO,
     ActionType.SCHEDULE_LIST,
     ActionType.REGISTRY_READ,
+    ActionType.LOG_ANALYZE,
     # Tier 1 read-only
     ActionType.MOUSE_POSITION,
     ActionType.SCREEN_OCR,
     ActionType.SCREEN_FIND_TEXT,
     ActionType.SCREEN_ANALYZE,
     ActionType.SCREEN_ELEMENT_MAP,
+    ActionType.SCREEN_DETECT_ELEMENTS,
     ActionType.BROWSER_EXTRACT,
     ActionType.BROWSER_EXTRACT_TABLE,
     ActionType.BROWSER_EXTRACT_LINKS,
@@ -260,6 +294,13 @@ READ_ONLY_ACTIONS = {
     ActionType.FILE_PARSE,
     ActionType.FILE_SEARCH_CONTENT,
     ActionType.API_SCRAPE,
+    ActionType.WORKSPACE_SEARCH,
+    # Email agent read-only
+    ActionType.EMAIL_FETCH,
+    ActionType.EMAIL_SUMMARIZE,
+    # Calendar reconciliation (read-only — only reads ICS data)
+    ActionType.CALENDAR_FETCH,
+    ActionType.CALENDAR_RECONCILE,
 }
 
 DESTRUCTIVE_ACTIONS = {
@@ -295,6 +336,11 @@ SYSTEM_MODIFY_ACTIONS = {
     ActionType.API_WEBHOOK,
     ActionType.API_SLACK,
     ActionType.API_DISCORD,
+    # Email agent actions (IMAP fetch is read-only; reply/send require confirmation)
+    ActionType.EMAIL_REPLY,
+    # SSH is always a remote system modification surface
+    ActionType.SSH_COMMAND,
+    ActionType.SSH_SCRIPT,
 }
 
 
@@ -307,7 +353,16 @@ class FileParams(BaseModel):
     destination: str | None = None
     recursive: bool = False
     pattern: str | None = None  # For file_search
+    max_depth: int = 3  # For directory_summary
+    max_entries: int = 200  # For directory_summary
+    ignore_dirs: list[str] = Field(default_factory=lambda: [".git", "node_modules"])  # For directory_summary
     permissions: str | None = None  # e.g. "755" for file_permissions
+
+
+class GitResolveParams(BaseModel):
+    path: str = ""
+    full_block: str = ""
+    resolved_code: str = ""
 
 
 class PackageParams(BaseModel):
@@ -352,6 +407,14 @@ class ShellScriptParams(BaseModel):
     working_directory: str | None = None
     timeout: int = 60
     elevated: bool = False
+
+
+class PtyExecParams(BaseModel):
+    """Run a command inside a persistent PTY shell session."""
+
+    session_id: str = "default"
+    command: str = ""
+    timeout: int = 30
 
 
 class OpenUrlParams(BaseModel):
@@ -472,6 +535,16 @@ class RegistryParams(BaseModel):
     value_type: str = "REG_SZ"
 
 
+class LogAnalyzeParams(BaseModel):
+    """Parameters for log analysis operations."""
+
+    log_path: str = ""  # path to log file (or log category e.g., 'auth', 'syslog', 'nginx')
+    log_type: str | None = None  # syslog, auth, json, service, nginx, apache, windows
+    query: str | None = None  # specific query or filter to apply
+    time_window: str | None = None  # e.g., "1h", "24h"
+    llm_contextual: bool = False  # whether to run LLM-based contextual analysis
+
+
 # ======= TIER 1: GAME CHANGER PARAMS =======
 
 
@@ -508,6 +581,20 @@ class ScreenVisionParams(BaseModel):
     prompt: str = "Describe what you see on the screen"  # For analysis
     region: str | None = None  # "x,y,w,h" or None for fullscreen
     language: str = "eng"
+
+
+class ElementDetectionParams(BaseModel):
+    """For VLM zero-shot element detection (SCREEN_DETECT_ELEMENTS).
+
+    The VLM is asked to locate all interactive UI elements in a screenshot
+    and return structured bounding-box coordinates so the agent can click
+    or type without relying on DOM trees or accessibility APIs.
+    """
+
+    description: str = ""  # Optional: natural-language filter, e.g. "login button"
+    region: str | None = None  # "x,y,w,h" or None for full screen
+    max_elements: int = 20  # cap on returned elements
+    action_filter: str = ""  # "click" | "type" | "" (all)
 
 
 class BrowserParams(BaseModel):
@@ -549,6 +636,21 @@ class TriggerParams(BaseModel):
 
 
 # ======= TIER 2: MULTIPLIER PARAMS =======
+
+
+class SkillRunParams(BaseModel):
+    """Invoke a dynamically loaded :class:`pilot.skills.base.Skill`."""
+
+    skill_id: str = ""
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "arguments" not in data and "params" in data:
+            data = dict(data)
+            data["arguments"] = data.pop("params")
+        return data
 
 
 class CodeExecParams(BaseModel):
@@ -600,6 +702,72 @@ class ApiRequestParams(BaseModel):
     labels: list[str] = Field(default_factory=list)
 
 
+class WorkspaceParams(BaseModel):
+    """For workspace indexing and semantic search."""
+
+    folder_path: str = ""
+    query: str = ""
+    n_results: int = 5
+
+
+class EmailParams(BaseModel):
+    """Parameters for IMAP/SMTP email operations."""
+
+    # Connection settings
+    imap_host: str = ""  # e.g. imap.gmail.com
+    smtp_host: str = ""  # e.g. smtp.gmail.com
+    smtp_port: int = 587
+    username: str = ""  # full email address
+    app_password: str = ""  # App Password (not account password)
+
+    # Fetch options
+    mailbox: str = "INBOX"
+    max_emails: int = 10  # max unread emails to fetch
+    mark_as_read: bool = False  # mark fetched emails as read
+
+    # Reply / send options
+    reply_to_uid: str = ""  # UID of the email to reply to
+    reply_body: str = ""  # pre-written reply body (empty = LLM drafts it)
+    subject: str = ""  # subject override for new emails
+    to: str = ""  # recipient for new emails
+
+    # Summarise options
+    emails_json: str = ""  # JSON-serialised list of fetched emails to summarise
+
+
+class CalendarParams(BaseModel):
+    """Parameters for calendar reconciliation actions."""
+
+    emails_json: str = ""
+    lookahead_hours: int = 24
+    check_conflicts: bool = True
+    check_missing_links: bool = True
+    notify: bool = True
+
+
+class SshCommandParams(BaseModel):
+    """Parameters for executing a single command over SSH on a configured host."""
+
+    host: str = ""
+    command: str = ""
+    timeout_seconds: int = 60
+
+
+class SshScriptParams(BaseModel):
+    """Parameters for executing a multi-line bash script over SSH on a configured host."""
+
+    host: str = ""
+    script: str = ""
+    timeout_seconds: int = 300
+
+
+class WasmCallParams(BaseModel):
+    """Parameters for wasm_call action."""
+
+    tool: str = ""
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
 class EmptyParams(BaseModel):
     """For actions that need no parameters."""
 
@@ -615,6 +783,7 @@ ActionParameters = (
     | DBusParams
     | ShellCommandParams
     | ShellScriptParams
+    | PtyExecParams
     | OpenUrlParams
     | OpenApplicationParams
     | NotifyParams
@@ -632,6 +801,7 @@ ActionParameters = (
     | DiskManageParams
     | DownloadParams
     | RegistryParams
+    | LogAnalyzeParams
     | MouseParams
     | KeyboardParams
     | ScreenVisionParams
@@ -640,6 +810,15 @@ ActionParameters = (
     | CodeExecParams
     | FileIntelParams
     | ApiRequestParams
+    | WorkspaceParams
+    | EmailParams
+    | CalendarParams
+    | SshCommandParams
+    | SshScriptParams
+    | ElementDetectionParams
+    | WasmCallParams
+    | SkillRunParams
+    | GitResolveParams
     | EmptyParams
 )
 
@@ -658,15 +837,17 @@ class Action(BaseModel):
 
     @property
     def permission_tier(self) -> PermissionTier:
-        # These actions are ALWAYS safe — never require confirmation
+        # These actions are ALWAYS safe ΓÇö never require confirmation
         ALWAYS_SAFE = {
             ActionType.FILE_READ,
             ActionType.FILE_WRITE,
+            ActionType.GIT_RESOLVE,
             ActionType.FILE_LIST,
             ActionType.FILE_SEARCH,
             ActionType.FILE_COPY,
             ActionType.CODE_EXECUTE,
             ActionType.CODE_GENERATE_AND_RUN,
+            ActionType.SKILL_RUN,
             ActionType.SHELL_COMMAND,
             ActionType.BROWSER_NAVIGATE,
             ActionType.BROWSER_EXTRACT,
@@ -705,6 +886,7 @@ class Action(BaseModel):
             ActionType.API_REQUEST,
             ActionType.API_SCRAPE,
             ActionType.DOWNLOAD_FILE,
+            ActionType.WASM_CALL,
         }
         if self.action_type in ALWAYS_SAFE:
             return PermissionTier.USER_WRITE

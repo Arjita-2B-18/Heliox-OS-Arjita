@@ -45,10 +45,13 @@ class AgentRole(StrEnum):
     """Canonical agent roles in the system."""
 
     SYSTEM = "system_agent"
+    SSH = "ssh_agent"
     CODE = "code_agent"
     WEB = "web_agent"
     MONITOR = "monitor_agent"
     COMMUNICATION = "comm_agent"
+    RSS = "rss_agent"
+    FORENSICS = "forensics_agent"
     ORCHESTRATOR = "orchestrator"
     GENERAL = "general"
 
@@ -155,6 +158,14 @@ class BaseAgent(ABC):
     def can_handle(self, action_type: ActionType) -> bool:
         """Return True if this agent handles the given action type."""
         ...
+
+    def get_permission_tier(self) -> int:
+        """Return the minimum permission tier required (default: 1)."""
+        return 1
+
+    def get_resource_needs(self) -> set[str]:
+        """Return set of resource requirements (e.g., 'browser', 'screen', 'audio')."""
+        return set()
 
     # ── Lifecycle ──
 

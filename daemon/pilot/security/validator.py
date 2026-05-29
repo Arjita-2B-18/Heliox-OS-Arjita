@@ -18,7 +18,9 @@ from pilot.actions import (
     DBusParams,
     DownloadParams,
     FileParams,
+    GitResolveParams,
     GnomeSettingParams,
+    LogAnalyzeParams,
     NotifyParams,
     OpenApplicationParams,
     OpenUrlParams,
@@ -27,6 +29,10 @@ from pilot.actions import (
     ServiceParams,
     ShellCommandParams,
     ShellScriptParams,
+    SkillRunParams,
+    SshCommandParams,
+    SshScriptParams,
+    WasmCallParams,
 )
 from pilot.security.sanitizer import SanitizationError, Sanitizer
 
@@ -94,6 +100,7 @@ NO_TARGET_REQUIRED = {
     ActionType.DOWNLOAD_FILE,
     ActionType.REGISTRY_READ,
     ActionType.REGISTRY_WRITE,
+    ActionType.LOG_ANALYZE,
     # Tier 1: Game Changers
     ActionType.MOUSE_CLICK,
     ActionType.MOUSE_DOUBLE_CLICK,
@@ -150,6 +157,12 @@ NO_TARGET_REQUIRED = {
     ActionType.API_SLACK,
     ActionType.API_DISCORD,
     ActionType.API_SCRAPE,
+    ActionType.SKILL_RUN,
+    # SSH remote exec is parameter-driven (host alias)
+    ActionType.SSH_COMMAND,
+    ActionType.SSH_SCRIPT,
+    ActionType.GIT_RESOLVE,
+    ActionType.WASM_CALL,
 }
 
 # File action types
@@ -204,6 +217,9 @@ class ActionValidator:
             if params.destination:
                 self._sanitizer.validate_path(params.destination, idx)
 
+        elif isinstance(params, GitResolveParams):
+            self._sanitizer.validate_path(params.path, idx)
+
         elif isinstance(params, PackageParams):
             self._sanitizer.validate_package_name(params.name, idx)
 
@@ -222,6 +238,14 @@ class ActionValidator:
             if not params.script or not params.script.strip():
                 raise ValidationError(idx, "Empty script")
 
+        elif isinstance(params, (SshCommandParams, SshScriptParams)):
+            if not params.host or not params.host.strip():
+                raise ValidationError(idx, "Empty SSH host alias")
+            if isinstance(params, SshCommandParams) and (not params.command or not params.command.strip()):
+                raise ValidationError(idx, "Empty SSH command")
+            if isinstance(params, SshScriptParams) and (not params.script or not params.script.strip()):
+                raise ValidationError(idx, "Empty SSH script")
+
         elif isinstance(params, DBusParams):
             self._sanitizer.validate_dbus_params(params, idx)
 
@@ -236,8 +260,24 @@ class ActionValidator:
             if not params.key_path:
                 raise ValidationError(idx, "Empty registry key_path")
 
+        elif isinstance(params, LogAnalyzeParams):
+            if params.log_path:
+                import os
+
+                # Validate path safety only if it actually represents a file path rather than a category name
+                if "/" in params.log_path or "\\" in params.log_path or os.path.isabs(params.log_path):
+                    self._sanitizer.validate_path(params.log_path, idx)
+
+        elif isinstance(params, SkillRunParams):
+            if not params.skill_id or not params.skill_id.strip():
+                raise ValidationError(idx, "skill_run requires non-empty skill_id")
+
         elif isinstance(params, (OpenApplicationParams, NotifyParams)):
             pass
+
+        elif isinstance(params, WasmCallParams):
+            if not params.tool and not action.target:
+                raise ValidationError(idx, "WASM call requires a tool name")
 
     def _validate_root_requirement(self, action: Action, idx: int) -> None:
         if action.requires_root and not self._config.security.root_enabled:
@@ -249,7 +289,7 @@ class ActionValidator:
     def _validate_restrictions(self, action: Action, idx: int) -> None:
         restrictions = self._config.restrictions
 
-        if isinstance(action.parameters, FileParams):
+        if isinstance(action.parameters, (FileParams, GitResolveParams)):
             path_str = action.parameters.path
             for protected in restrictions.protected_folders:
                 if path_str.startswith(protected):
