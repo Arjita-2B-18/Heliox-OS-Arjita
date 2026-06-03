@@ -586,19 +586,17 @@ pip install torch --index-url https://download.pytorch.org/whl/cu121
 ```
 
 ---
-
 ### TRIBE v2 Engine Installation
 
 **Requirements:**
-- Python 3.8+
+- Python 3.11+
 - CUDA 11.8 or 12.1
 - PyTorch installed first
 - Visual C++ 2019 or newer
 
 **Error Messages:**
 TRIBE v2 requires CUDA version 11.8 or higher
-ImportError: cannot import name 'TRIBE'
-
+ImportError: cannot import name 'TribeModel' from 'tribev2'
 **Installation Steps:**
 
 1. Install PyTorch first:
@@ -606,15 +604,27 @@ ImportError: cannot import name 'TRIBE'
 pip install torch --index-url https://download.pytorch.org/whl/cu121
 ```
 
-2. Install TRIBE v2:
+2. Clone and install tribev2 from facebookresearch:
 ```bash
-pip install tribe-engine
+git clone https://github.com/facebookresearch/tribev2.git
+cd tribev2
+pip install -e .
 ```
 
-3. Verify:
+3. Verify installation:
 ```bash
-python -c "from tribe import TRIBE; print('TRIBE v2 loaded successfully')"
+python -c "from tribev2 import TribeModel; print('TRIBE v2 loaded successfully')"
 ```
+
+4. Load a pretrained model:
+```python
+from tribev2 import TribeModel
+
+model = TribeModel.from_pretrained("facebook/tribev2", cache_folder="./cache")
+```
+
+
+
 
 ---
 
