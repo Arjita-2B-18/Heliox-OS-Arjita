@@ -597,6 +597,7 @@ pip install torch --index-url https://download.pytorch.org/whl/cu121
 **Error Messages:**
 TRIBE v2 requires CUDA version 11.8 or higher
 ImportError: cannot import name 'TribeModel' from 'tribev2'
+
 **Installation Steps:**
 
 1. Install PyTorch first:
